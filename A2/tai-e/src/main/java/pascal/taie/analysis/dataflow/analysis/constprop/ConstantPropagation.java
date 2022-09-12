@@ -114,10 +114,9 @@ public class ConstantPropagation extends
             if (lv instanceof Var && canHoldInt((Var)lv)) {
                 Value val = evaluate(rv, in);
                 out.update((Var)lv, val);
-                return !outOrigin.equals(out);
             }
         }
-        return false;
+        return !outOrigin.equals(out);
     }
 
     /**
