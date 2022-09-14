@@ -182,78 +182,7 @@ public class ConstantPropagation extends
         if (val1.isConstant() && val2.isConstant()) {
             int value1 = val1.getConstant();
             int value2 = val2.getConstant();
-            switch (operator.toString()) {
-                // ArithmeticExp
-                case "+":
-                    return Value.makeConstant(value1 + value2);
-                case "-":
-                    return Value.makeConstant(value1 - value2);
-                case "*":
-                    return Value.makeConstant(value1 * value2);
-                case "/":
-                    if (value2 == 0) return Value.getUndef();
-                    else return Value.makeConstant(value1 / value2);
-                case "%":
-                    if (value2 == 0) return Value.getUndef();
-                    else return Value.makeConstant(value1 % value2);
-                    // BitwiseExp
-                case "|":
-                    return Value.makeConstant(value1 | value2);
-                case "&":
-                    return Value.makeConstant(value1 & value2);
-                case "^":
-                    return Value.makeConstant(value1 ^ value2);
-                //ConditionExp
-                case "==":
-                    if (value1 == value2) return Value.makeConstant(1);
-                    else return Value.makeConstant(0);
-                case "!=":
-                    if (value1 != value2) return Value.makeConstant(1);
-                    else return Value.makeConstant(0);
-                case "<":
-                    if (value1 < value2) return Value.makeConstant(1);
-                    else return Value.makeConstant(0);
-                case ">":
-                    if (value1 > value2) return Value.makeConstant(1);
-                    else return Value.makeConstant(0);
-                case "<=":
-                    if (value1 <= value2) return Value.makeConstant(1);
-                    else return Value.makeConstant(0);
-                case ">=":
-                    if (value1 >= value2) return Value.makeConstant(1);
-                    else return Value.makeConstant(0);
-                    //ShiftExp
-                case "<<":
-                    return Value.makeConstant(value1 << value2);
-                case ">>":
-                    return Value.makeConstant(value1 >> value2);
-                case ">>>":
-                    return Value.makeConstant(value1 >>> value2);
-                default:
-                    throw new RuntimeException("Unknown operator: " + operator);
-            }
-        }
-        if (val1.isConstant()){ // val2.isConstant() is false
-            int value1 = val1.getConstant();
-            if (value1 == 0) {
-                switch (operator.toString()) {
-                    case "*":
-                    case "/":
-                    case "%":
-                    case "&":
-                        return Value.makeConstant(0);
-                }
-            }
-        }
-        if (val2.isConstant()) {
-            int value2  = val2.getConstant();
-            if (value2 == 0) {
-                switch(operator.toString()) {
-                    case "*":
-                    case "&":
-                        return Value.makeConstant(0);
-                }
-            }
+            return calculate(value1, value2, operator.toString());
         }
 
         if (val1.isNAC() || val2.isNAC()){
@@ -261,5 +190,58 @@ public class ConstantPropagation extends
         }
 
         return Value.getUndef();
+    }
+
+    private static Value calculate(int value1, int value2, String operator) {
+        switch (operator) {
+            // ArithmeticExp
+            case "+":
+                return Value.makeConstant(value1 + value2);
+            case "-":
+                return Value.makeConstant(value1 - value2);
+            case "*":
+                return Value.makeConstant(value1 * value2);
+            case "/":
+                if (value2 == 0) return Value.getUndef();
+                else return Value.makeConstant(value1 / value2);
+            case "%":
+                if (value2 == 0) return Value.getUndef();
+                else return Value.makeConstant(value1 % value2);
+                // BitwiseExp
+            case "|":
+                return Value.makeConstant(value1 | value2);
+            case "&":
+                return Value.makeConstant(value1 & value2);
+            case "^":
+                return Value.makeConstant(value1 ^ value2);
+            //ConditionExp
+            case "==":
+                if (value1 == value2) return Value.makeConstant(1);
+                else return Value.makeConstant(0);
+            case "!=":
+                if (value1 != value2) return Value.makeConstant(1);
+                else return Value.makeConstant(0);
+            case "<":
+                if (value1 < value2) return Value.makeConstant(1);
+                else return Value.makeConstant(0);
+            case ">":
+                if (value1 > value2) return Value.makeConstant(1);
+                else return Value.makeConstant(0);
+            case "<=":
+                if (value1 <= value2) return Value.makeConstant(1);
+                else return Value.makeConstant(0);
+            case ">=":
+                if (value1 >= value2) return Value.makeConstant(1);
+                else return Value.makeConstant(0);
+                //ShiftExp
+            case "<<":
+                return Value.makeConstant(value1 << value2);
+            case ">>":
+                return Value.makeConstant(value1 >> value2);
+            case ">>>":
+                return Value.makeConstant(value1 >>> value2);
+            default:
+                throw new RuntimeException("Unknown operator: " + operator);
+        }
     }
 }
