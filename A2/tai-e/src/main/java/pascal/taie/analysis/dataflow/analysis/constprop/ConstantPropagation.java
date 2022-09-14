@@ -148,80 +148,118 @@ public class ConstantPropagation extends
     public static Value evaluate(Exp exp, CPFact in) {
         // TODO - finish me
         if (exp instanceof Var) {
-            Var v = (Var) exp;
-            return in.get(v);
+            return evalVar(exp, in);
         } else if (exp instanceof IntLiteral) {
-            int val = ((IntLiteral) exp).getValue();
-            return Value.makeConstant(val);
+            return evalIntLiteral(exp);
         } else if (exp instanceof BinaryExp) {
-            // BinaryExp
-            BinaryExp be = (BinaryExp) exp;
-            Var op1 = be.getOperand1();
-            Value val1 = in.get(op1);
-            Var op2 = be.getOperand2();
-            Value val2 = in.get(op2);
-            if (val1.isNAC() || val2.isNAC()) return Value.getNAC();
-            else if (val1.isConstant() && val2.isConstant()) {
-                BinaryExp.Op operator = be.getOperator();
-
-                int value1 = val1.getConstant();
-                int value2 = val2.getConstant();
-                switch (operator.toString()) {
-                    // ArithmeticExp
-                    case "+":
-                        return Value.makeConstant(value1 + value2);
-                    case "-":
-                        return Value.makeConstant(value1 - value2);
-                    case "*":
-                        return Value.makeConstant(value1 * value2);
-                    case "/":
-                        if (value2 == 0) return Value.getUndef();
-                        else return Value.makeConstant(value1 / value2);
-                    case "%":
-                        if (value2 == 0) return Value.getUndef();
-                        else return Value.makeConstant(value1 % value2);
-                    // BitwiseExp
-                    case "|":
-                        return Value.makeConstant(value1 | value2);
-                    case "&":
-                        return Value.makeConstant(value1 & value2);
-                    case "^":
-                        return Value.makeConstant(value1 ^ value2);
-                    //ConditionExp
-                    case "==":
-                        if (value1 == value2) return Value.makeConstant(1);
-                        else return Value.makeConstant(0);
-                    case "!=":
-                        if (value1 != value2) return Value.makeConstant(1);
-                        else return Value.makeConstant(0);
-                    case "<":
-                        if (value1 < value2) return Value.makeConstant(1);
-                        else return Value.makeConstant(0);
-                    case ">":
-                        if (value1 > value2) return Value.makeConstant(1);
-                        else return Value.makeConstant(0);
-                    case "<=":
-                        if (value1 <= value2) return Value.makeConstant(1);
-                        else return Value.makeConstant(0);
-                    case ">=":
-                        if (value1 >= value2) return Value.makeConstant(1);
-                        else return Value.makeConstant(0);
-                    //ShiftExp
-                    case "<<":
-                        return Value.makeConstant(value1 << value2);
-                    case ">>":
-                        return Value.makeConstant(value1 >> value2);
-                    case ">>>":
-                        return Value.makeConstant(value1 >>> value2);
-                    default:
-                        throw new RuntimeException("Unknown operator: " + operator);
-                }
-            } else {
-                return Value.getUndef();
-            }
+            return evalBinaryExp(exp, in);
         } else {
             //other cases for example: method invoke && field load
             return Value.getNAC();
         }
+    }
+
+    private static Value evalVar(Exp exp, CPFact in) {
+        Var v = (Var) exp;
+        return in.get(v);
+    }
+
+    private static Value evalIntLiteral(Exp exp) {
+        int val = ((IntLiteral) exp).getValue();
+        return Value.makeConstant(val);
+    }
+
+    private static Value evalBinaryExp(Exp exp, CPFact in) {
+        // BinaryExp
+        BinaryExp be = (BinaryExp) exp;
+
+        BinaryExp.Op operator = be.getOperator();
+        Var op1 = be.getOperand1();
+        Value val1 = in.get(op1);
+        Var op2 = be.getOperand2();
+        Value val2 = in.get(op2);
+
+        if (val1.isConstant() && val2.isConstant()) {
+            int value1 = val1.getConstant();
+            int value2 = val2.getConstant();
+            switch (operator.toString()) {
+                // ArithmeticExp
+                case "+":
+                    return Value.makeConstant(value1 + value2);
+                case "-":
+                    return Value.makeConstant(value1 - value2);
+                case "*":
+                    return Value.makeConstant(value1 * value2);
+                case "/":
+                    if (value2 == 0) return Value.getUndef();
+                    else return Value.makeConstant(value1 / value2);
+                case "%":
+                    if (value2 == 0) return Value.getUndef();
+                    else return Value.makeConstant(value1 % value2);
+                    // BitwiseExp
+                case "|":
+                    return Value.makeConstant(value1 | value2);
+                case "&":
+                    return Value.makeConstant(value1 & value2);
+                case "^":
+                    return Value.makeConstant(value1 ^ value2);
+                //ConditionExp
+                case "==":
+                    if (value1 == value2) return Value.makeConstant(1);
+                    else return Value.makeConstant(0);
+                case "!=":
+                    if (value1 != value2) return Value.makeConstant(1);
+                    else return Value.makeConstant(0);
+                case "<":
+                    if (value1 < value2) return Value.makeConstant(1);
+                    else return Value.makeConstant(0);
+                case ">":
+                    if (value1 > value2) return Value.makeConstant(1);
+                    else return Value.makeConstant(0);
+                case "<=":
+                    if (value1 <= value2) return Value.makeConstant(1);
+                    else return Value.makeConstant(0);
+                case ">=":
+                    if (value1 >= value2) return Value.makeConstant(1);
+                    else return Value.makeConstant(0);
+                    //ShiftExp
+                case "<<":
+                    return Value.makeConstant(value1 << value2);
+                case ">>":
+                    return Value.makeConstant(value1 >> value2);
+                case ">>>":
+                    return Value.makeConstant(value1 >>> value2);
+                default:
+                    throw new RuntimeException("Unknown operator: " + operator);
+            }
+        }
+        if (val1.isConstant()){ // val2.isConstant() is false
+            int value1 = val1.getConstant();
+            if (value1 == 0) {
+                switch (operator.toString()) {
+                    case "*":
+                    case "/":
+                    case "%":
+                    case "&":
+                        return Value.makeConstant(0);
+                }
+            }
+        }
+        if (val2.isConstant()) {
+            int value2  = val2.getConstant();
+            if (value2 == 0) {
+                switch(operator.toString()) {
+                    case "*":
+                    case "&":
+                        return Value.makeConstant(0);
+                }
+            }
+        }
+
+        if (val1.isNAC() || val2.isNAC()){
+            return Value.getNAC();
+        }
+
+        return Value.getUndef();
     }
 }
