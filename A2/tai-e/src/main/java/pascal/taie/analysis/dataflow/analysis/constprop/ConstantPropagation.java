@@ -116,6 +116,7 @@ public class ConstantPropagation extends
                 out.update((Var)lv, val);
             }
         }
+
         return !outOrigin.equals(out);
     }
 

@@ -71,4 +71,9 @@ public class CPTest {
     public void testLoop() {
         testCP("Loop");
     }
+
+    @Test
+    public void testFloat() {
+        testCP("Float");
+    }
 }

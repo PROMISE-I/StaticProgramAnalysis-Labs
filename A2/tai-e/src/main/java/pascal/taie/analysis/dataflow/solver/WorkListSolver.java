@@ -57,7 +57,7 @@ class WorkListSolver<Node, Fact> extends Solver<Node, Fact> {
                 Fact outPred = result.getOutFact(pred);
                 analysis.meetInto(outPred, inFact);
             }
-            result.setInFact(node, inFact);
+
             if (analysis.transferNode(node, inFact, outFact)) {
                 Set<Node> succsOf = cfg.getSuccsOf(node);
                 for (Node succ : succsOf) {
