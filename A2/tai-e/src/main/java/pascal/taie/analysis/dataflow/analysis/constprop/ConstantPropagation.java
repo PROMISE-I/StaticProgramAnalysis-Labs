@@ -179,6 +179,9 @@ public class ConstantPropagation extends
         Var op2 = be.getOperand2();
         Value val2 = in.get(op2);
 
+        Value resValue = handleDivideByZero(operator.toString(), val2);
+        if (resValue != null) return resValue;
+
         if (val1.isConstant() && val2.isConstant()) {
             int value1 = val1.getConstant();
             int value2 = val2.getConstant();
@@ -202,11 +205,9 @@ public class ConstantPropagation extends
             case "*":
                 return Value.makeConstant(value1 * value2);
             case "/":
-                if (value2 == 0) return Value.getUndef();
-                else return Value.makeConstant(value1 / value2);
+                return Value.makeConstant(value1 / value2);
             case "%":
-                if (value2 == 0) return Value.getUndef();
-                else return Value.makeConstant(value1 % value2);
+                return Value.makeConstant(value1 % value2);
                 // BitwiseExp
             case "|":
                 return Value.makeConstant(value1 | value2);
@@ -242,6 +243,18 @@ public class ConstantPropagation extends
                 return Value.makeConstant(value1 >>> value2);
             default:
                 throw new RuntimeException("Unknown operator: " + operator);
+        }
+    }
+
+    private static Value handleDivideByZero(String operator, Value divider) {
+        switch (operator) {
+            case "/":
+            case "%":
+                if (divider.isConstant() && divider.getConstant() == 0) {
+                    return Value.getUndef();
+                }
+            default:
+                return null;
         }
     }
 }
