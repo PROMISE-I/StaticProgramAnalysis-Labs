@@ -33,21 +33,11 @@ import pascal.taie.analysis.graph.cfg.CFGBuilder;
 import pascal.taie.analysis.graph.cfg.Edge;
 import pascal.taie.config.AnalysisConfig;
 import pascal.taie.ir.IR;
-import pascal.taie.ir.exp.ArithmeticExp;
-import pascal.taie.ir.exp.ArrayAccess;
-import pascal.taie.ir.exp.CastExp;
-import pascal.taie.ir.exp.FieldAccess;
-import pascal.taie.ir.exp.NewExp;
-import pascal.taie.ir.exp.RValue;
-import pascal.taie.ir.exp.Var;
-import pascal.taie.ir.stmt.AssignStmt;
-import pascal.taie.ir.stmt.If;
-import pascal.taie.ir.stmt.Stmt;
-import pascal.taie.ir.stmt.SwitchStmt;
+import pascal.taie.ir.exp.*;
+import pascal.taie.ir.stmt.*;
+import pascal.taie.util.collection.Pair;
 
-import java.util.Comparator;
-import java.util.Set;
-import java.util.TreeSet;
+import java.util.*;
 
 public class DeadCodeDetection extends MethodAnalysis {
 
@@ -71,6 +61,7 @@ public class DeadCodeDetection extends MethodAnalysis {
         Set<Stmt> deadCode = new TreeSet<>(Comparator.comparing(Stmt::getIndex));
         // TODO - finish me
         // Your task is to recognize dead code in ir and add it to deadCode
+        traversalCFGDeadCode(deadCode, cfg, constants, liveVars);
         return deadCode;
     }
 
@@ -96,4 +87,157 @@ public class DeadCodeDetection extends MethodAnalysis {
         }
         return true;
     }
+
+    enum Color {
+        White, Gray, Black
+    }
+
+    private void traversalCFGDeadCode(Set<Stmt> deadCode, CFG<Stmt> cfg,
+                                      DataflowResult<Stmt, CPFact> constants,
+                                      DataflowResult<Stmt, SetFact<Var>> liveVars) {
+        // initialize Color information for every node in cfg which is stmt.
+        Map<Stmt, Color> traverColorInfo = new HashMap<>();
+        for (Stmt stmt : cfg) {
+            traverColorInfo.put(stmt, Color.White);
+        }
+
+        for(Stmt stmt : traverColorInfo.keySet()) {
+            if (cfg.isEntry(stmt) && traverColorInfo.get(stmt) == Color.White) {
+                dfsCFGDeadCode(stmt, traverColorInfo, deadCode, cfg, constants, liveVars);
+            }
+        }
+
+        addUnreachableStmt(cfg, deadCode, traverColorInfo);
+    }
+
+    private void dfsCFGDeadCode(Stmt stmt, Map<Stmt, Color> traverColorInfo, Set<Stmt> deadCode,
+                                CFG<Stmt> cfg,
+                                DataflowResult<Stmt, CPFact> constants,
+                                DataflowResult<Stmt, SetFact<Var>> liveVars) {
+        traverColorInfo.put(stmt, Color.Gray);
+
+        if (stmt instanceof Invoke || stmt instanceof AssignStmt<?,?>) {
+            if (stmt instanceof Invoke) handleInvoke((Invoke) stmt, deadCode, liveVars);
+            else handleAssign((AssignStmt<?, ?>) stmt, deadCode, liveVars);
+
+            traversalAllSuccessor(stmt, traverColorInfo, deadCode, cfg, constants, liveVars);
+        }
+        else if (stmt instanceof If) {
+            handleIf(stmt, traverColorInfo, deadCode, cfg, constants, liveVars);
+        }
+        else if (stmt instanceof SwitchStmt) {
+            handleSwitch(stmt, traverColorInfo, deadCode, cfg, constants, liveVars);
+        }
+        else {
+            traversalAllSuccessor(stmt, traverColorInfo, deadCode, cfg, constants, liveVars);
+        }
+
+        traverColorInfo.put(stmt, Color.Black);
+    }
+
+    private void handleInvoke(Invoke stmt, Set<Stmt> deadCode,
+                              DataflowResult<Stmt, SetFact<Var>> liveVars) {
+        LValue lValue = stmt.getLValue();
+        if (lValue instanceof Var lv) {
+            SetFact<Var> outFact = liveVars.getOutFact(stmt);
+            if (!outFact.contains(lv)) {
+                // lv is not livable
+                if (hasNoSideEffect(((Invoke) stmt).getRValue())) {
+                    deadCode.add(stmt);
+                }
+            }
+        }
+    }
+
+    private void handleAssign(AssignStmt<?,?> stmt, Set<Stmt> deadCode,
+                              DataflowResult<Stmt, SetFact<Var>> liveVars) {
+        LValue lValue = stmt.getLValue();
+        if (lValue instanceof Var lv) {
+            SetFact<Var> outFact = liveVars.getOutFact(stmt);
+            if (!outFact.contains(lv)) {
+                // lv is not livable
+                deadCode.add(stmt);
+            }
+        }
+    }
+
+    private void handleIf(Stmt stmt, Map<Stmt, Color> traverColorInfo, Set<Stmt> deadCode,
+                          CFG<Stmt> cfg,
+                          DataflowResult<Stmt, CPFact> constants,
+                          DataflowResult<Stmt, SetFact<Var>> liveVars) {
+        CPFact inFact = constants.getInFact(stmt);
+        ConditionExp condition = ((If) stmt).getCondition();
+
+        Value condVal = ConstantPropagation.evaluate(condition, inFact);
+        if (condVal.isConstant()) {
+            for (Edge<Stmt> e: cfg.getOutEdgesOf(stmt)) {
+                if ((condVal.getConstant() == 0 && e.getKind() == Edge.Kind.IF_FALSE) ||
+                    (condVal.getConstant() == 1 && e.getKind() == Edge.Kind.IF_TRUE)) {
+                    Stmt succ = e.getTarget();
+                    traversalSpecificStmt(succ, traverColorInfo, deadCode, cfg, constants, liveVars);
+                    break;
+                }
+            }
+        } else {
+            // normal traversal
+            traversalAllSuccessor(stmt, traverColorInfo, deadCode, cfg, constants, liveVars);
+        }
+    }
+
+    private void handleSwitch(Stmt stmt, Map<Stmt, Color> traverColorInfo, Set<Stmt> deadCode,
+                              CFG<Stmt> cfg,
+                              DataflowResult<Stmt, CPFact> constants,
+                              DataflowResult<Stmt, SetFact<Var>> liveVars) {
+        CPFact inFact = constants.getInFact(stmt);
+        Var var = ((SwitchStmt) stmt).getVar();
+
+        Value varValue = ConstantPropagation.evaluate(var, inFact);
+        if (varValue.isConstant()) {
+            boolean isDefault = true;
+
+            for (Pair<Integer, Stmt> p : ((SwitchStmt) stmt).getCaseTargets()) {
+                if (varValue.getConstant() == p.first()) {
+                    isDefault = false;
+
+                    Stmt succ = p.second();
+                    traversalSpecificStmt(succ, traverColorInfo, deadCode, cfg, constants, liveVars);
+                }
+            }
+
+            if (isDefault) {
+                Stmt succ = ((SwitchStmt) stmt).getDefaultTarget();
+                traversalSpecificStmt(succ, traverColorInfo, deadCode, cfg, constants, liveVars);
+            }
+        } else {
+            // normal traversal
+            traversalAllSuccessor(stmt, traverColorInfo, deadCode, cfg, constants, liveVars);
+        }
+    }
+
+    private void traversalAllSuccessor(Stmt stmt, Map<Stmt, Color> traverColorInfo, Set<Stmt> deadCode,
+                                       CFG<Stmt> cfg,
+                                       DataflowResult<Stmt, CPFact> constants,
+                                       DataflowResult<Stmt, SetFact<Var>> liveVars) {
+        for (Stmt succ : cfg.getSuccsOf(stmt)) {
+            traversalSpecificStmt(succ, traverColorInfo, deadCode, cfg, constants, liveVars);
+        }
+    }
+
+    private void traversalSpecificStmt(Stmt successor, Map<Stmt, Color> traverColorInfo, Set<Stmt> deadCode,
+                                       CFG<Stmt> cfg,
+                                       DataflowResult<Stmt, CPFact> constants,
+                                       DataflowResult<Stmt, SetFact<Var>> liveVars) {
+        if (traverColorInfo.get(successor) == Color.White) {
+            dfsCFGDeadCode(successor, traverColorInfo, deadCode, cfg, constants, liveVars);
+        }
+    }
+
+    private void addUnreachableStmt(CFG<Stmt> cfg, Set<Stmt> deadCode, Map<Stmt, Color> traverColorInfo) {
+        for (Stmt stmt : traverColorInfo.keySet()) {
+            if (!cfg.isExit(stmt) && traverColorInfo.get(stmt) == Color.White) {
+                deadCode.add(stmt);
+            }
+        }
+    }
+
 }
