@@ -287,16 +287,16 @@ class Solver {
 
         Set<CSObj> objects = new HashSet<>(pointsToSet.getObjects());
         objects.removeAll(pointer.getPointsToSet().getObjects());
-        for (CSObj csObj : objects) {
-            diffPTS.addObject(csObj);   // 加入指向关系差集
-            pointer.getPointsToSet().addObject(csObj);  // 加入指针自己的指向关系集合
+        if (!objects.isEmpty()) {
+            for (CSObj csObj : objects) {
+                diffPTS.addObject(csObj);   // 加入指向关系差集
+                pointer.getPointsToSet().addObject(csObj);  // 加入指针自己的指向关系集合
+            }
+            for (Pointer success : pointerFlowGraph.getSuccsOf(pointer)) {
+                // TODO 需要重新，以防 PointsToSet.getObjects()指向同一个对象
+                workList.addEntry(success, diffPTS);
+            }
         }
-
-        for (Pointer success : pointerFlowGraph.getSuccsOf(pointer)) {
-            // TODO 需要重新，以防 PointsToSet.getObjects()指向同一个对象
-            workList.addEntry(success, diffPTS);
-        }
-
         return diffPTS;
     }
 
