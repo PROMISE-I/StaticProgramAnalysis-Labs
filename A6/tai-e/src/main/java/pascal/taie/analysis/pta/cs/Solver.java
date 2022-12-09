@@ -138,8 +138,11 @@ class Solver {
             /* csVar = new T(); */
             // 通过堆模型获得对象，并通过 csManger 获得CSVar
             CSVar csVar = csManager.getCSVar(context, stmt.getLValue());
-            // 通过堆模型获得对象，并通过 csManger 获得上下文obj
-            CSObj csObj = csManager.getCSObj(context, heapModel.getObj(stmt));
+            // 通过堆模型获得对象，并通过 csManger 获得原本上下文，再获得新的上下文，最后得到csObj
+            CSMethod csMethod = csManager.getCSMethod(context, stmt.getContainer());
+            Obj obj = heapModel.getObj(stmt);
+            Context newContext = contextSelector.selectHeapContext(csMethod, obj);
+            CSObj csObj = csManager.getCSObj(newContext, obj);
             // 加入 worklist
             workList.addEntry(csVar, PointsToSetFactory.make(csObj));
 
@@ -311,16 +314,14 @@ class Solver {
             CSCallSite csCallSite = csManager.getCSCallSite(context, stmt);
             Context newContext = contextSelector.selectContext(csCallSite, recvObj, method);    // 确定被调方法的上下文
 
+            // recv var -> this var
+            CSVar csThisVar = csManager.getCSVar(newContext, method.getIR().getThis());
+            addPFGEdge(recv, csThisVar);
+
             CSMethod csMethod = csManager.getCSMethod(newContext, method);
             Edge<CSCallSite, CSMethod> edge = new Edge<>(getCallKind(stmt), csCallSite, csMethod);   // 获得调用边
-
             if (callGraph.addEdge(edge)) {
                 addReachable(csMethod);
-
-                // recv var -> this var
-                CSVar csThisVar = csManager.getCSVar(newContext, method.getIR().getThis());
-                addPFGEdge(recv, csThisVar);
-
                 passArgsAndRetVar(stmt, method, context, newContext);
             }
         }
