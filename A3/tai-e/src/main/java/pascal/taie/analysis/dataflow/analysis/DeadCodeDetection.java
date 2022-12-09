@@ -154,7 +154,7 @@ public class DeadCodeDetection extends MethodAnalysis {
         LValue lValue = stmt.getLValue();
         if (lValue instanceof Var lv) {
             SetFact<Var> outFact = liveVars.getOutFact(stmt);
-            if (!outFact.contains(lv)) {
+            if (!outFact.contains(lv) && hasNoSideEffect(stmt.getRValue())) {
                 // lv is not livable
                 deadCode.add(stmt);
             }

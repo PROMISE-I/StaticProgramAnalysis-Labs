@@ -50,17 +50,14 @@ import pascal.taie.analysis.pta.pts.PointsToSetFactory;
 import pascal.taie.config.AnalysisOptions;
 import pascal.taie.ir.exp.InvokeExp;
 import pascal.taie.ir.exp.Var;
-import pascal.taie.ir.stmt.Copy;
-import pascal.taie.ir.stmt.Invoke;
-import pascal.taie.ir.stmt.LoadArray;
-import pascal.taie.ir.stmt.LoadField;
-import pascal.taie.ir.stmt.New;
-import pascal.taie.ir.stmt.StmtVisitor;
-import pascal.taie.ir.stmt.StoreArray;
-import pascal.taie.ir.stmt.StoreField;
+import pascal.taie.ir.stmt.*;
 import pascal.taie.language.classes.JField;
 import pascal.taie.language.classes.JMethod;
 import pascal.taie.language.type.Type;
+
+import java.awt.*;
+import java.util.HashSet;
+import java.util.Set;
 
 class Solver {
 
@@ -112,6 +109,11 @@ class Solver {
      */
     private void addReachable(CSMethod csMethod) {
         // TODO - finish me
+        if (callGraph.addReachableMethod(csMethod)) {
+            for (Stmt stmt : csMethod.getMethod().getIR().getStmts()) {
+                stmt.accept(new StmtProcessor(csMethod));
+            }
+        }
     }
 
     /**
@@ -130,6 +132,73 @@ class Solver {
 
         // TODO - if you choose to implement addReachable()
         //  via visitor pattern, then finish me
+
+        @Override
+        public Void visit(New stmt) {
+            /* csVar = new T(); */
+            // 通过堆模型获得对象，并通过 csManger 获得CSVar
+            CSVar csVar = csManager.getCSVar(context, stmt.getLValue());
+            // 通过堆模型获得对象，并通过 csManger 获得上下文obj
+            CSObj csObj = csManager.getCSObj(context, heapModel.getObj(stmt));
+            // 加入 worklist
+            workList.addEntry(csVar, PointsToSetFactory.make(csObj));
+
+            return StmtVisitor.super.visit(stmt);
+        }
+
+        @Override
+        public Void visit(Copy stmt) {
+            /* lCsVar = rCsVar; */
+            CSVar rCsVar = csManager.getCSVar(context, stmt.getRValue());
+            CSVar lCsVar = csManager.getCSVar(context, stmt.getLValue());
+            addPFGEdge(rCsVar, lCsVar);
+
+            return StmtVisitor.super.visit(stmt);
+        }
+
+        @Override
+        public Void visit(LoadField stmt) {
+            /* x = T.f; */
+            if (stmt.isStatic()) {
+                StaticField staticField = csManager.getStaticField(stmt.getFieldRef().resolve());
+                CSVar lCSVar = csManager.getCSVar(context, stmt.getLValue());
+
+                addPFGEdge(staticField, lCSVar);
+            }
+
+            return StmtVisitor.super.visit(stmt);
+        }
+
+        @Override
+        public Void visit(StoreField stmt) {
+            /* T.f = x; */
+            if (stmt.isStatic()) {
+                CSVar csVar = csManager.getCSVar(context, stmt.getRValue());
+                StaticField staticField = csManager.getStaticField(stmt.getFieldRef().resolve());
+
+                addPFGEdge(csVar, staticField);
+            }
+            return StmtVisitor.super.visit(stmt);
+        }
+
+        @Override
+        public Void visit(Invoke stmt) {
+            /* (x = ) T.m(); */
+            if (stmt.isStatic()) {
+                JMethod method = resolveCallee(null, stmt); // 解析方法签名
+                CSCallSite csCallSite = csManager.getCSCallSite(context, stmt); // 获得上下文调用点
+
+                Context newContext = contextSelector.selectContext(csCallSite, method); // 选择新的上下文
+                CSMethod csMethod = csManager.getCSMethod(newContext, method);  // 组成上下文方法
+
+                Edge<CSCallSite, CSMethod> callEdge = new Edge<>(CallKind.STATIC, csCallSite, csMethod);
+                if (callGraph.addEdge(callEdge)) {
+                    addReachable(csMethod);
+                    passArgsAndRetVar(stmt, method, context, newContext);
+                }
+            }
+            return StmtVisitor.super.visit(stmt);
+        }
     }
 
     /**
@@ -137,6 +206,13 @@ class Solver {
      */
     private void addPFGEdge(Pointer source, Pointer target) {
         // TODO - finish me
+        // TODO 源指针和目标指针的指向关系集应该不能直接赋值？
+        PointsToSet sourcePTS = source.getPointsToSet();
+        PointsToSet targetPTS = PointsToSetFactory.make();
+        if (pointerFlowGraph.addEdge(source, target) && (!sourcePTS.isEmpty())) {
+            targetPTS.addAll(sourcePTS);
+            workList.addEntry(target, targetPTS);
+        }
     }
 
     /**
@@ -144,6 +220,58 @@ class Solver {
      */
     private void analyze() {
         // TODO - finish me
+        while (!workList.isEmpty()) {
+            WorkList.Entry entry = workList.pollEntry();
+            Pointer pointer = entry.pointer();
+            PointsToSet newPTS = entry.pointsToSet();
+            PointsToSet diffPTS = propagate(pointer, newPTS);
+            if (pointer instanceof CSVar) {
+                CSVar csVar = (CSVar) pointer;
+                for (CSObj csObj : diffPTS.getObjects()) {
+                    Context context = csVar.getContext();
+                    // handle field load
+                    for (LoadField stmt : csVar.getVar().getLoadFields()) {
+                        /* y = x.f */
+                        JField field = stmt.getFieldRef().resolve();
+                        InstanceField instanceField = csManager.getInstanceField(csObj, field);
+                        CSVar lCSVar = csManager.getCSVar(context, stmt.getLValue());
+
+                        addPFGEdge(instanceField, lCSVar);
+                    }
+
+                    // handle array load
+                    for (LoadArray stmt : csVar.getVar().getLoadArrays()) {
+                        /* y = x[i] */
+                        ArrayIndex arrayIndex = csManager.getArrayIndex(csObj);
+                        CSVar lCSVar = csManager.getCSVar(context, stmt.getLValue());
+
+                        addPFGEdge(arrayIndex, lCSVar);
+                    }
+
+                    // handle field store
+                    for (StoreField stmt : csVar.getVar().getStoreFields()) {
+                        /* x.f = y */
+                        CSVar rCSVar = csManager.getCSVar(context, stmt.getRValue());
+                        JField field = stmt.getFieldRef().resolve();
+                        InstanceField instanceField = csManager.getInstanceField(csObj, field);
+
+                        addPFGEdge(rCSVar, instanceField);
+                    }
+
+                    // handle array store
+                    for (StoreArray stmt : csVar.getVar().getStoreArrays()) {
+                        /* x[i] = y */
+                        CSVar rCSVar = csManager.getCSVar(context, stmt.getRValue());
+                        ArrayIndex arrayIndex = csManager.getArrayIndex(csObj);
+
+                        addPFGEdge(rCSVar, arrayIndex);
+                    }
+
+                    // handle method invocation
+                    processCall(csVar, csObj);
+                }
+            }
+        }
     }
 
     /**
@@ -152,7 +280,21 @@ class Solver {
      */
     private PointsToSet propagate(Pointer pointer, PointsToSet pointsToSet) {
         // TODO - finish me
-        return null;
+        PointsToSet diffPTS = PointsToSetFactory.make();
+
+        Set<CSObj> objects = new HashSet<>(pointsToSet.getObjects());
+        objects.removeAll(pointer.getPointsToSet().getObjects());
+        for (CSObj csObj : objects) {
+            diffPTS.addObject(csObj);   // 加入指向关系差集
+            pointer.getPointsToSet().addObject(csObj);  // 加入指针自己的指向关系集合
+        }
+
+        for (Pointer success : pointerFlowGraph.getSuccsOf(pointer)) {
+            // TODO 需要重新，以防 PointsToSet.getObjects()指向同一个对象
+            workList.addEntry(success, diffPTS);
+        }
+
+        return diffPTS;
     }
 
     /**
@@ -163,6 +305,65 @@ class Solver {
      */
     private void processCall(CSVar recv, CSObj recvObj) {
         // TODO - finish me
+        Context context = recv.getContext();
+        for (Invoke stmt : recv.getVar().getInvokes()) {
+            JMethod method = resolveCallee(recvObj, stmt);  // 解析方法签名
+            CSCallSite csCallSite = csManager.getCSCallSite(context, stmt);
+            Context newContext = contextSelector.selectContext(csCallSite, recvObj, method);    // 确定被调方法的上下文
+
+            CSMethod csMethod = csManager.getCSMethod(newContext, method);
+            Edge<CSCallSite, CSMethod> edge = new Edge<>(getCallKind(stmt), csCallSite, csMethod);   // 获得调用边
+
+            if (callGraph.addEdge(edge)) {
+                addReachable(csMethod);
+
+                // recv var -> this var
+                CSVar csThisVar = csManager.getCSVar(newContext, method.getIR().getThis());
+                addPFGEdge(recv, csThisVar);
+
+                passArgsAndRetVar(stmt, method, context, newContext);
+            }
+        }
+    }
+
+    /**
+     * 为函数调用传递参数和返回值
+     * @param stmt
+     * @param method
+     * @param rawContext
+     * @param newContext
+     */
+    private void passArgsAndRetVar(Invoke stmt, JMethod method, Context rawContext, Context newContext) {
+        // args -> params
+        for (int i = 0; i < method.getParamCount(); i++) {
+            CSVar csArgVar = csManager.getCSVar(rawContext, stmt.getInvokeExp().getArg(i));
+            CSVar csParamVar = csManager.getCSVar(newContext, method.getIR().getParam(i));
+            addPFGEdge(csArgVar, csParamVar);
+        }
+
+        // 传递 ret var
+        Var lVar = stmt.getLValue();
+        if (lVar != null) {
+            CSVar csLVar = csManager.getCSVar(rawContext, lVar);
+            for (Var retVar : method.getIR().getReturnVars()) {
+                CSVar csRetVar = csManager.getCSVar(newContext, retVar);
+                addPFGEdge(csRetVar, csLVar);
+            }
+        }
+    }
+
+    /**
+     * 获得调用函数的调用类型
+     * @param stmt
+     * @return
+     */
+    private CallKind getCallKind(Invoke stmt) {
+        if (stmt.isInterface()) return CallKind.INTERFACE;
+        if (stmt.isVirtual()) return CallKind.VIRTUAL;
+        if (stmt.isSpecial()) return CallKind.SPECIAL;
+        if (stmt.isStatic()) return CallKind.STATIC;
+        if (stmt.isDynamic()) return CallKind.DYNAMIC;
+        return CallKind.OTHER;
     }
 
     /**
