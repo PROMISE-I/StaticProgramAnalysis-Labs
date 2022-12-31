@@ -24,8 +24,11 @@ package pascal.taie.analysis.dataflow.inter;
 
 import pascal.taie.analysis.dataflow.fact.DataflowResult;
 import pascal.taie.analysis.graph.icfg.ICFG;
+import pascal.taie.analysis.graph.icfg.ICFGEdge;
 import pascal.taie.util.collection.SetQueue;
 
+import java.util.LinkedList;
+import java.util.List;
 import java.util.Queue;
 import java.util.Set;
 import java.util.stream.Collectors;
@@ -58,11 +61,83 @@ class InterSolver<Method, Node, Fact> {
         return result;
     }
 
+    public Set<Node> getAllStmts() {
+        return icfg.getNodes();
+    }
+
+    public Fact getInFact(Node n) {
+        return result.getInFact(n);
+    }
+
     private void initialize() {
         // TODO - finish me
+        workList = new LinkedList<>();
+
+        List<Node> entries = getEntries();
+        List<Node> exits = getExits();
+        for (Node entry : entries) {
+            result.setOutFact(entry, analysis.newBoundaryFact(entry));
+        }
+        for (Node exit : exits) {
+            result.setInFact(exit, analysis.newInitialFact());
+        }
+
+        for (Node n : icfg) {
+            if (!(entries.contains(n) || exits.contains(n))) {
+                result.setInFact(n, analysis.newInitialFact());
+                result.setOutFact(n, analysis.newInitialFact());
+                workList.add(n);
+            }
+        }
     }
 
     private void doSolve() {
         // TODO - finish me
+        List<Node> exits = getExits();
+
+        while (!workList.isEmpty()) {
+            Node n = workList.peek();
+            workList.remove();
+
+            Fact inFact = result.getInFact(n);
+            Fact outFact = result.getOutFact(n);
+            for (ICFGEdge<Node> inEdge : icfg.getInEdgesOf(n)) {
+                Node pred = inEdge.getSource();
+                Fact predOutFact = result.getOutFact(pred);
+                Fact outFactAfterEdge = analysis.transferEdge(inEdge, predOutFact);
+                analysis.meetInto(outFactAfterEdge, inFact);
+            }
+
+            if (analysis.transferNode(n, inFact, outFact)) {
+                for (Node succ : icfg.getSuccsOf(n)) {
+                    if (!exits.contains(succ)) {
+                        workList.add(succ);
+                    }
+                }
+            }
+            result.setOutFact(n, outFact);
+        }
+    }
+
+    private List<Node> getEntries() {
+        List<Node> entries = new LinkedList<>();
+        List<Method> entryMethods = icfg.entryMethods().toList();
+        for (Method m : entryMethods) {
+            Node entry = icfg.getEntryOf(m);
+            entries.add(entry);
+        }
+
+        return entries;
+    }
+
+    private List<Node> getExits() {
+        List<Node> exits = new LinkedList<>();
+        List<Method> entryMethods = icfg.entryMethods().toList();
+        for (Method m : entryMethods) {
+            Node exit = icfg.getExitOf(m);
+            exits.add(exit);
+        }
+
+        return exits;
     }
 }

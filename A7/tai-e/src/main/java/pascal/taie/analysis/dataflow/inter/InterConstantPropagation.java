@@ -25,20 +25,25 @@ package pascal.taie.analysis.dataflow.inter;
 import pascal.taie.World;
 import pascal.taie.analysis.dataflow.analysis.constprop.CPFact;
 import pascal.taie.analysis.dataflow.analysis.constprop.ConstantPropagation;
-import pascal.taie.analysis.graph.cfg.CFG;
+import pascal.taie.analysis.dataflow.analysis.constprop.Value;
 import pascal.taie.analysis.graph.cfg.CFGBuilder;
 import pascal.taie.analysis.graph.icfg.CallEdge;
 import pascal.taie.analysis.graph.icfg.CallToReturnEdge;
 import pascal.taie.analysis.graph.icfg.NormalEdge;
 import pascal.taie.analysis.graph.icfg.ReturnEdge;
 import pascal.taie.analysis.pta.PointerAnalysisResult;
+import pascal.taie.analysis.pta.core.heap.Obj;
 import pascal.taie.config.AnalysisConfig;
 import pascal.taie.ir.IR;
-import pascal.taie.ir.exp.InvokeExp;
-import pascal.taie.ir.exp.Var;
-import pascal.taie.ir.stmt.Invoke;
-import pascal.taie.ir.stmt.Stmt;
+import pascal.taie.ir.exp.*;
+import pascal.taie.ir.stmt.*;
+import pascal.taie.language.classes.JField;
 import pascal.taie.language.classes.JMethod;
+
+import java.util.HashSet;
+import java.util.LinkedList;
+import java.util.List;
+import java.util.Set;
 
 /**
  * Implementation of interprocedural constant propagation for int values.
@@ -50,6 +55,8 @@ public class InterConstantPropagation extends
 
     private final ConstantPropagation cp;
 
+    private PointerAnalysisResult ptaResult;
+
     public InterConstantPropagation(AnalysisConfig config) {
         super(config);
         cp = new ConstantPropagation(new AnalysisConfig(ConstantPropagation.ID));
@@ -60,6 +67,7 @@ public class InterConstantPropagation extends
         String ptaId = getOptions().getString("pta");
         PointerAnalysisResult pta = World.get().getResult(ptaId);
         // You can do initialization work here
+        ptaResult = pta;
     }
 
     @Override
@@ -86,36 +94,162 @@ public class InterConstantPropagation extends
     @Override
     protected boolean transferCallNode(Stmt stmt, CPFact in, CPFact out) {
         // TODO - finish me
-        return false;
+        CPFact outOrigin = out.copy();
+        out.clear();
+        for (Var v : in.keySet()) {
+            out.update(v, in.get(v));
+        }
+        return !outOrigin.equals(out);
     }
 
     @Override
     protected boolean transferNonCallNode(Stmt stmt, CPFact in, CPFact out) {
         // TODO - finish me
-        return false;
+        CPFact outOrigin = out.copy();
+        out.clear();
+        for (Var v : in.keySet()) {
+            out.update(v, in.get(v));
+        }
+
+        if (stmt instanceof LoadField loadFieldStmt) {
+            Var lValue = loadFieldStmt.getLValue();
+
+            if (!loadFieldStmt.isStatic() && ConstantPropagation.canHoldInt(lValue)) {
+                Var base = ((InstanceFieldAccess) (loadFieldStmt.getFieldAccess())).getBase();
+                Set<Obj> basePTS = ptaResult.getPointsToSet(base);
+
+                List<Var> aliases = new LinkedList<>();
+                // find alias variable
+                for (Var v : ptaResult.getVars()) {
+                    Set<Obj> vPTS = new HashSet<>(ptaResult.getPointsToSet(v));
+                    if (vPTS.removeAll(basePTS)) {
+                        aliases.add(v);
+                    }
+                }
+                // meet flow from alias
+                for (Var alias : aliases) {
+                    List<StoreField> storeFields = alias.getStoreFields();
+                    for (StoreField storeField : storeFields) {
+                        Var rValue = storeField.getRValue();
+                        if (ConstantPropagation.canHoldInt(rValue)) {
+                            Value newValue = cp.meetValue(out.get(lValue), solver.getInFact(storeField).get(rValue));
+                            out.update(lValue, newValue);
+                        }
+                    }
+                }
+            } else if (loadFieldStmt.isStatic() && ConstantPropagation.canHoldInt(lValue)) {
+                JField staticField = loadFieldStmt.getFieldRef().resolve();
+                Set<Stmt> stmts = solver.getAllStmts();
+                for (Stmt targetStmt : stmts) {
+                    if (targetStmt instanceof StoreField storeFieldStmt && storeFieldStmt.isStatic()) {
+                        Var rValue = storeFieldStmt.getRValue();
+                        if (storeFieldStmt.getFieldRef().resolve().equals(staticField) &&
+                                ConstantPropagation.canHoldInt(rValue)) {
+                            Value newValue = cp.meetValue(out.get(lValue), solver.getInFact(storeFieldStmt).get(rValue));
+                            out.update(lValue, newValue);
+                        }
+                    }
+                }
+            }
+        } else if (stmt instanceof LoadArray loadArrayStmt) {
+            Var lValue = loadArrayStmt.getLValue();
+            if (ConstantPropagation.canHoldInt(lValue)) {
+                Var base = loadArrayStmt.getArrayAccess().getBase();
+                Var index = loadArrayStmt.getArrayAccess().getIndex();
+
+                Set<Obj> basePTS = ptaResult.getPointsToSet(base);
+                // find alias and meet value
+                for (Var v : ptaResult.getVars()) {
+                    Set<Obj> vPTS = new HashSet<>(ptaResult.getPointsToSet(v));
+                    if (vPTS.removeAll(basePTS)) {
+                        for (StoreArray storeArray : v.getStoreArrays()) {
+                            Var aliasIndex = storeArray.getArrayAccess().getIndex();
+                            Var rValue = storeArray.getRValue();
+                            if (isAliasIndex(in.get(index), in.get(aliasIndex))) {
+                                Value newValue = cp.meetValue(out.get(lValue), solver.getInFact(storeArray).get(rValue));
+                                out.update(lValue, newValue);
+                            }
+                        }
+                    }
+                }
+            }
+        } else if (stmt instanceof DefinitionStmt<?,?> definitionStmt) {
+            LValue lv = definitionStmt.getLValue();
+            RValue rv = definitionStmt.getRValue();
+
+            if (lv instanceof Var && ConstantPropagation.canHoldInt((Var)lv)) {
+                Value val = ConstantPropagation.evaluate(rv, in);
+                out.update((Var)lv, val);
+            }
+        }
+
+        return !outOrigin.equals(out);
     }
 
     @Override
     protected CPFact transferNormalEdge(NormalEdge<Stmt> edge, CPFact out) {
         // TODO - finish me
-        return null;
+        return out;
     }
 
     @Override
     protected CPFact transferCallToReturnEdge(CallToReturnEdge<Stmt> edge, CPFact out) {
         // TODO - finish me
-        return null;
+        CPFact outWithoutLV = out.copy();
+        Stmt stmt = edge.getSource();
+
+        if (stmt instanceof DefinitionStmt<?,?>) {
+            LValue lv = ((DefinitionStmt<?, ?>) stmt).getLValue();
+            if (lv instanceof Var returnVar && ConstantPropagation.canHoldInt((Var) lv)) {
+                outWithoutLV.update(returnVar, Value.getUndef());
+            }
+        }
+
+        return outWithoutLV;
     }
 
     @Override
     protected CPFact transferCallEdge(CallEdge<Stmt> edge, CPFact callSiteOut) {
         // TODO - finish me
-        return null;
+        Stmt sourceStmt = edge.getSource();
+        InvokeExp invokeExp = ((Invoke) sourceStmt).getInvokeExp();
+
+        CPFact calleeInFact = new CPFact();
+        for (int i = 0; i < invokeExp.getArgCount(); i++) {
+            Var param = edge.getCallee().getIR().getParam(i);
+            Var arg = invokeExp.getArg(i);
+
+            calleeInFact.update(param, callSiteOut.get(arg));
+        }
+
+        return calleeInFact;
     }
 
     @Override
     protected CPFact transferReturnEdge(ReturnEdge<Stmt> edge, CPFact returnOut) {
         // TODO - finish me
-        return null;
+        CPFact calleeOutFact = new CPFact();
+
+        Stmt callSiteStmt = edge.getCallSite();
+        if (callSiteStmt instanceof DefinitionStmt<?,?>) {
+            LValue lv = ((DefinitionStmt<?, ?>) callSiteStmt).getLValue();
+            if (lv instanceof Var returnVar && ConstantPropagation.canHoldInt((Var) lv)) {
+                Value returnValue = Value.getUndef();
+
+                for (Var rv : edge.getReturnVars()) {
+                    returnValue = cp.meetValue(returnValue, returnOut.get(rv));
+                }
+
+                calleeOutFact.update(returnVar, returnValue);
+            }
+        }
+
+        return calleeOutFact;
+    }
+
+    private boolean isAliasIndex(Value v1, Value v2) {
+        if (v1.isUndef() || v2.isUndef()) {
+            return false;
+        } else return !v1.isConstant() || !v2.isConstant() || v1.equals(v2);
     }
 }
