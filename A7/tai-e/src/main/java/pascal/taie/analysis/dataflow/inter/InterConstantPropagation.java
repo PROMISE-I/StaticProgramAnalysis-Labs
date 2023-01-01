@@ -27,10 +27,7 @@ import pascal.taie.analysis.dataflow.analysis.constprop.CPFact;
 import pascal.taie.analysis.dataflow.analysis.constprop.ConstantPropagation;
 import pascal.taie.analysis.dataflow.analysis.constprop.Value;
 import pascal.taie.analysis.graph.cfg.CFGBuilder;
-import pascal.taie.analysis.graph.icfg.CallEdge;
-import pascal.taie.analysis.graph.icfg.CallToReturnEdge;
-import pascal.taie.analysis.graph.icfg.NormalEdge;
-import pascal.taie.analysis.graph.icfg.ReturnEdge;
+import pascal.taie.analysis.graph.icfg.*;
 import pascal.taie.analysis.pta.PointerAnalysisResult;
 import pascal.taie.analysis.pta.core.heap.Obj;
 import pascal.taie.config.AnalysisConfig;
@@ -40,10 +37,7 @@ import pascal.taie.ir.stmt.*;
 import pascal.taie.language.classes.JField;
 import pascal.taie.language.classes.JMethod;
 
-import java.util.HashSet;
-import java.util.LinkedList;
-import java.util.List;
-import java.util.Set;
+import java.util.*;
 
 /**
  * Implementation of interprocedural constant propagation for int values.
@@ -55,7 +49,13 @@ public class InterConstantPropagation extends
 
     private final ConstantPropagation cp;
 
-    private PointerAnalysisResult ptaResult;
+    private final Map<LoadField, Set<StoreField>> loadStoreFieldMap = new HashMap<>();
+
+    private final Map<StoreField, Set<LoadField>> storeLoadFieldMap = new HashMap<>();
+
+    private final Map<LoadArray, Set<StoreArray>> loadStoreArrayMap = new HashMap<>();
+
+    private final Map<StoreArray, Set<LoadArray>> storeLoadArrayMap = new HashMap<>();
 
     public InterConstantPropagation(AnalysisConfig config) {
         super(config);
@@ -67,7 +67,29 @@ public class InterConstantPropagation extends
         String ptaId = getOptions().getString("pta");
         PointerAnalysisResult pta = World.get().getResult(ptaId);
         // You can do initialization work here
-        ptaResult = pta;
+
+        for (Stmt stmt : icfg.getNodes()) {
+            if (stmt instanceof LoadField loadFieldStmt) {
+                loadStoreFieldMap.put(loadFieldStmt, new HashSet<>());
+            }
+            if (stmt instanceof StoreField storeFieldStmt) {
+                storeLoadFieldMap.put(storeFieldStmt, new HashSet<>());
+            }
+            if (stmt instanceof LoadArray loadArrayStmt) {
+                loadStoreArrayMap.put(loadArrayStmt, new HashSet<>());
+            }
+            if (stmt instanceof StoreArray storeArrayStmt) {
+                storeLoadArrayMap.put(storeArrayStmt, new HashSet<>());
+            }
+        }
+
+        for (Stmt stmt : icfg.getNodes()) {
+            if (stmt instanceof LoadField loadFieldStmt) {
+                fillFieldMap(loadFieldStmt, pta);
+            } else if (stmt instanceof LoadArray loadArrayStmt) {
+                fillArrayMap(loadArrayStmt, pta);
+            }
+        }
     }
 
     @Override
@@ -112,22 +134,30 @@ public class InterConstantPropagation extends
         }
 
         if (stmt instanceof LoadField loadFieldStmt) {
+            /* x = y.f || x = T.f */
             Var lValue = loadFieldStmt.getLValue();
             out.update(lValue, Value.getUndef());
 
             if (ConstantPropagation.canHoldInt(lValue)) {
-                if (!loadFieldStmt.isStatic()) {
-                    transferNonStaticLoadField(loadFieldStmt, out, lValue);
-                } else {
-                    transferStaticLoadField(loadFieldStmt, out, lValue);
-                }
+                transferLoadField(loadFieldStmt, out, lValue);
+            }
+        } else if (stmt instanceof StoreField storeFieldStmt && !outOrigin.equals(out)) {
+            /* y.f = x || T.f = x */
+            for (LoadField loadFieldStmt : storeLoadFieldMap.get(storeFieldStmt)) {
+                solver.addNodeToWorkList(loadFieldStmt);
             }
         } else if (stmt instanceof LoadArray loadArrayStmt) {
+            /* x = a[i] */
             Var lValue = loadArrayStmt.getLValue();
             out.update(lValue, Value.getUndef());
 
             if (ConstantPropagation.canHoldInt(lValue)) {
                 transferLoadArray(loadArrayStmt, in, out, lValue);
+            }
+        } else if (stmt instanceof StoreArray storeArrayStmt && !outOrigin.equals(out)) {
+            /* a[i] = x */
+            for (LoadArray loadArrayStmt : storeLoadArrayMap.get(storeArrayStmt)) {
+                solver.addNodeToWorkList(loadArrayStmt);
             }
         } else if (stmt instanceof DefinitionStmt<?,?> definitionStmt) {
             LValue lv = definitionStmt.getLValue();
@@ -203,68 +233,82 @@ public class InterConstantPropagation extends
         return calleeOutFact;
     }
 
-    private void transferNonStaticLoadField(LoadField loadFieldStmt, CPFact out, Var lValue) {
-        /* y = x.f */
-        Var base = ((InstanceFieldAccess) (loadFieldStmt.getFieldAccess())).getBase();
-        JField instanceField = loadFieldStmt.getFieldRef().resolve();
-        Set<Obj> basePTS = ptaResult.getPointsToSet(base);
+    private void fillFieldMap(LoadField loadFieldStmt, PointerAnalysisResult pta) {
+        Var lValue = loadFieldStmt.getLValue();
+        if (ConstantPropagation.canHoldInt(lValue)) {
+            if (!loadFieldStmt.isStatic()) {
+                Var base = ((InstanceFieldAccess)(loadFieldStmt.getFieldAccess())).getBase();
+                JField originField = loadFieldStmt.getFieldRef().resolve();
 
-        List<Var> aliases = new LinkedList<>();
-        // find alias variable
-        for (Var v : ptaResult.getVars()) {
-            Set<Obj> vPTS = new HashSet<>(ptaResult.getPointsToSet(v));
-            if (vPTS.removeAll(basePTS)) {
-                aliases.add(v);
-            }
-        }
-        // meet flow from alias
-        for (Var alias : aliases) {
-            List<StoreField> storeFields = alias.getStoreFields();
-            for (StoreField storeFieldStmt : storeFields) {
-                Var rValue = storeFieldStmt.getRValue();
-                JField targetField = storeFieldStmt.getFieldRef().resolve();
-                if (targetField.equals(instanceField) && ConstantPropagation.canHoldInt(rValue)) {
-                    Value newValue = cp.meetValue(out.get(lValue), solver.getInFact(storeFieldStmt).get(rValue));
-                    out.update(lValue, newValue);
+                Set<Obj> basePTS = pta.getPointsToSet(base);
+                for (Var v : pta.getVars()) {
+                    Set<Obj> vPTS = new HashSet<>(pta.getPointsToSet(v));
+                    if (vPTS.removeAll(basePTS)) {
+                        for (StoreField storeFieldStmt : v.getStoreFields()) {
+                            checkJFieldAndFillFieldMap(loadFieldStmt, storeFieldStmt, originField);
+                        }
+                    }
+                }
+            } else {
+                JField originField = loadFieldStmt.getFieldRef().resolve();
+                for (Stmt otherStmt : icfg.getNodes()) {
+                    if (otherStmt instanceof StoreField storeFieldStmt && storeFieldStmt.isStatic()) {
+                        checkJFieldAndFillFieldMap(loadFieldStmt, storeFieldStmt, originField);
+                    }
                 }
             }
         }
     }
 
-    private void transferStaticLoadField(LoadField loadFieldStmt, CPFact out, Var lValue) {
-        /* x = T.f */
-        JField staticField = loadFieldStmt.getFieldRef().resolve();
-        Set<Stmt> stmts = solver.getAllStmts();
-        for (Stmt targetStmt : stmts) {
-            if (targetStmt instanceof StoreField storeFieldStmt && storeFieldStmt.isStatic()) {
-                Var rValue = storeFieldStmt.getRValue();
-                JField targetField = storeFieldStmt.getFieldRef().resolve();
-                if (targetField.equals(staticField) && ConstantPropagation.canHoldInt(rValue)) {
-                    Value newValue = cp.meetValue(out.get(lValue), solver.getInFact(storeFieldStmt).get(rValue));
-                    out.update(lValue, newValue);
+    private void checkJFieldAndFillFieldMap(LoadField loadFieldStmt, StoreField storeFieldStmt, JField originField) {
+        Var rValue = storeFieldStmt.getRValue();
+        JField targetField = storeFieldStmt.getFieldRef().resolve();
+        if (targetField.equals(originField) && ConstantPropagation.canHoldInt(rValue)) {
+            loadStoreFieldMap.get(loadFieldStmt).add(storeFieldStmt);
+            storeLoadFieldMap.get(storeFieldStmt).add(loadFieldStmt);
+        }
+    }
+
+    private void fillArrayMap(LoadArray loadArrayStmt, PointerAnalysisResult pta) {
+        Var lValue = loadArrayStmt.getLValue();
+        if (ConstantPropagation.canHoldInt(lValue)) {
+            Var base = loadArrayStmt.getArrayAccess().getBase();
+            Set<Obj> basePTS = pta.getPointsToSet(base);
+            for (Var v : pta.getVars()) {
+                Set<Obj> vPTS = new HashSet<>(pta.getPointsToSet(v));
+                if (vPTS.removeAll(basePTS)) {
+                    for (StoreArray storeArrayStmt : v.getStoreArrays()) {
+                        Var rValue = storeArrayStmt.getRValue();
+                        if (ConstantPropagation.canHoldInt(rValue)) {
+                            loadStoreArrayMap.get(loadArrayStmt).add(storeArrayStmt);
+                            storeLoadArrayMap.get(storeArrayStmt).add(loadArrayStmt);
+                        }
+                    }
                 }
             }
+        }
+    }
+
+    private void transferLoadField(LoadField loadFieldStmt, CPFact out, Var lValue) {
+        /* y = x.f */
+        /* z = T.f */
+        for (StoreField storeFieldStmt : loadStoreFieldMap.get(loadFieldStmt)) {
+            Var rValue = storeFieldStmt.getRValue();
+            Value newValue = cp.meetValue(out.get(lValue), solver.getInFact(storeFieldStmt).get(rValue));
+            out.update(lValue, newValue);
         }
     }
 
     private void transferLoadArray(LoadArray loadArrayStmt, CPFact in, CPFact out, Var lValue) {
         /* x = a[i] */
-        Var base = loadArrayStmt.getArrayAccess().getBase();
         Var index = loadArrayStmt.getArrayAccess().getIndex();
-
-        Set<Obj> basePTS = ptaResult.getPointsToSet(base);
-        // find alias and meet value
-        for (Var v : ptaResult.getVars()) {
-            Set<Obj> vPTS = new HashSet<>(ptaResult.getPointsToSet(v));
-            if (vPTS.removeAll(basePTS)) {
-                for (StoreArray storeArrayStmt : v.getStoreArrays()) {
-                    Var aliasIndex = storeArrayStmt.getArrayAccess().getIndex();
-                    Var rValue = storeArrayStmt.getRValue();
-                    if (isAliasIndex(in.get(index), solver.getInFact(storeArrayStmt).get(aliasIndex))) {
-                        Value newValue = cp.meetValue(out.get(lValue), solver.getInFact(storeArrayStmt).get(rValue));
-                        out.update(lValue, newValue);
-                    }
-                }
+        for (StoreArray storeArrayStmt : loadStoreArrayMap.get(loadArrayStmt)) {
+            Var rValue = storeArrayStmt.getRValue();
+            Var aliasIndex = storeArrayStmt.getArrayAccess().getIndex();
+            // check index
+            if (isAliasIndex(in.get(index), solver.getInFact(storeArrayStmt).get(aliasIndex))) {
+                Value newValue = cp.meetValue(out.get(lValue), solver.getInFact(storeArrayStmt).get(rValue));
+                out.update(lValue, newValue);
             }
         }
     }
