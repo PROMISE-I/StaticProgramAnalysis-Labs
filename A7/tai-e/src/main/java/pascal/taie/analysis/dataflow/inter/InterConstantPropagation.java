@@ -113,65 +113,21 @@ public class InterConstantPropagation extends
 
         if (stmt instanceof LoadField loadFieldStmt) {
             Var lValue = loadFieldStmt.getLValue();
+            out.update(lValue, Value.getUndef());
 
-            if (!loadFieldStmt.isStatic() && ConstantPropagation.canHoldInt(lValue)) {
-                Var base = ((InstanceFieldAccess) (loadFieldStmt.getFieldAccess())).getBase();
-                Set<Obj> basePTS = ptaResult.getPointsToSet(base);
-
-                List<Var> aliases = new LinkedList<>();
-                // find alias variable
-                for (Var v : ptaResult.getVars()) {
-                    Set<Obj> vPTS = new HashSet<>(ptaResult.getPointsToSet(v));
-                    if (vPTS.removeAll(basePTS)) {
-                        aliases.add(v);
-                    }
-                }
-                // meet flow from alias
-                for (Var alias : aliases) {
-                    List<StoreField> storeFields = alias.getStoreFields();
-                    for (StoreField storeField : storeFields) {
-                        Var rValue = storeField.getRValue();
-                        if (ConstantPropagation.canHoldInt(rValue)) {
-                            Value newValue = cp.meetValue(out.get(lValue), solver.getInFact(storeField).get(rValue));
-                            out.update(lValue, newValue);
-                        }
-                    }
-                }
-            } else if (loadFieldStmt.isStatic() && ConstantPropagation.canHoldInt(lValue)) {
-                JField staticField = loadFieldStmt.getFieldRef().resolve();
-                Set<Stmt> stmts = solver.getAllStmts();
-                for (Stmt targetStmt : stmts) {
-                    if (targetStmt instanceof StoreField storeFieldStmt && storeFieldStmt.isStatic()) {
-                        Var rValue = storeFieldStmt.getRValue();
-                        if (storeFieldStmt.getFieldRef().resolve().equals(staticField) &&
-                                ConstantPropagation.canHoldInt(rValue)) {
-                            Value newValue = cp.meetValue(out.get(lValue), solver.getInFact(storeFieldStmt).get(rValue));
-                            out.update(lValue, newValue);
-                        }
-                    }
+            if (ConstantPropagation.canHoldInt(lValue)) {
+                if (!loadFieldStmt.isStatic()) {
+                    transferNonStaticLoadField(loadFieldStmt, out, lValue);
+                } else {
+                    transferStaticLoadField(loadFieldStmt, out, lValue);
                 }
             }
         } else if (stmt instanceof LoadArray loadArrayStmt) {
             Var lValue = loadArrayStmt.getLValue();
-            if (ConstantPropagation.canHoldInt(lValue)) {
-                Var base = loadArrayStmt.getArrayAccess().getBase();
-                Var index = loadArrayStmt.getArrayAccess().getIndex();
+            out.update(lValue, Value.getUndef());
 
-                Set<Obj> basePTS = ptaResult.getPointsToSet(base);
-                // find alias and meet value
-                for (Var v : ptaResult.getVars()) {
-                    Set<Obj> vPTS = new HashSet<>(ptaResult.getPointsToSet(v));
-                    if (vPTS.removeAll(basePTS)) {
-                        for (StoreArray storeArray : v.getStoreArrays()) {
-                            Var aliasIndex = storeArray.getArrayAccess().getIndex();
-                            Var rValue = storeArray.getRValue();
-                            if (isAliasIndex(in.get(index), in.get(aliasIndex))) {
-                                Value newValue = cp.meetValue(out.get(lValue), solver.getInFact(storeArray).get(rValue));
-                                out.update(lValue, newValue);
-                            }
-                        }
-                    }
-                }
+            if (ConstantPropagation.canHoldInt(lValue)) {
+                transferLoadArray(loadArrayStmt, in, out, lValue);
             }
         } else if (stmt instanceof DefinitionStmt<?,?> definitionStmt) {
             LValue lv = definitionStmt.getLValue();
@@ -245,6 +201,72 @@ public class InterConstantPropagation extends
         }
 
         return calleeOutFact;
+    }
+
+    private void transferNonStaticLoadField(LoadField loadFieldStmt, CPFact out, Var lValue) {
+        /* y = x.f */
+        Var base = ((InstanceFieldAccess) (loadFieldStmt.getFieldAccess())).getBase();
+        JField instanceField = loadFieldStmt.getFieldRef().resolve();
+        Set<Obj> basePTS = ptaResult.getPointsToSet(base);
+
+        List<Var> aliases = new LinkedList<>();
+        // find alias variable
+        for (Var v : ptaResult.getVars()) {
+            Set<Obj> vPTS = new HashSet<>(ptaResult.getPointsToSet(v));
+            if (vPTS.removeAll(basePTS)) {
+                aliases.add(v);
+            }
+        }
+        // meet flow from alias
+        for (Var alias : aliases) {
+            List<StoreField> storeFields = alias.getStoreFields();
+            for (StoreField storeFieldStmt : storeFields) {
+                Var rValue = storeFieldStmt.getRValue();
+                JField targetField = storeFieldStmt.getFieldRef().resolve();
+                if (targetField.equals(instanceField) && ConstantPropagation.canHoldInt(rValue)) {
+                    Value newValue = cp.meetValue(out.get(lValue), solver.getInFact(storeFieldStmt).get(rValue));
+                    out.update(lValue, newValue);
+                }
+            }
+        }
+    }
+
+    private void transferStaticLoadField(LoadField loadFieldStmt, CPFact out, Var lValue) {
+        /* x = T.f */
+        JField staticField = loadFieldStmt.getFieldRef().resolve();
+        Set<Stmt> stmts = solver.getAllStmts();
+        for (Stmt targetStmt : stmts) {
+            if (targetStmt instanceof StoreField storeFieldStmt && storeFieldStmt.isStatic()) {
+                Var rValue = storeFieldStmt.getRValue();
+                JField targetField = storeFieldStmt.getFieldRef().resolve();
+                if (targetField.equals(staticField) && ConstantPropagation.canHoldInt(rValue)) {
+                    Value newValue = cp.meetValue(out.get(lValue), solver.getInFact(storeFieldStmt).get(rValue));
+                    out.update(lValue, newValue);
+                }
+            }
+        }
+    }
+
+    private void transferLoadArray(LoadArray loadArrayStmt, CPFact in, CPFact out, Var lValue) {
+        /* x = a[i] */
+        Var base = loadArrayStmt.getArrayAccess().getBase();
+        Var index = loadArrayStmt.getArrayAccess().getIndex();
+
+        Set<Obj> basePTS = ptaResult.getPointsToSet(base);
+        // find alias and meet value
+        for (Var v : ptaResult.getVars()) {
+            Set<Obj> vPTS = new HashSet<>(ptaResult.getPointsToSet(v));
+            if (vPTS.removeAll(basePTS)) {
+                for (StoreArray storeArrayStmt : v.getStoreArrays()) {
+                    Var aliasIndex = storeArrayStmt.getArrayAccess().getIndex();
+                    Var rValue = storeArrayStmt.getRValue();
+                    if (isAliasIndex(in.get(index), solver.getInFact(storeArrayStmt).get(aliasIndex))) {
+                        Value newValue = cp.meetValue(out.get(lValue), solver.getInFact(storeArrayStmt).get(rValue));
+                        out.update(lValue, newValue);
+                    }
+                }
+            }
+        }
     }
 
     private boolean isAliasIndex(Value v1, Value v2) {

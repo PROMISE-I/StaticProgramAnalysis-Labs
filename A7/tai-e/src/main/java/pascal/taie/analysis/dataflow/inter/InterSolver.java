@@ -71,51 +71,45 @@ class InterSolver<Method, Node, Fact> {
 
     private void initialize() {
         // TODO - finish me
-        workList = new LinkedList<>();
-
         List<Node> entries = getEntries();
-        List<Node> exits = getExits();
         for (Node entry : entries) {
             result.setOutFact(entry, analysis.newBoundaryFact(entry));
         }
-        for (Node exit : exits) {
-            result.setInFact(exit, analysis.newInitialFact());
-        }
 
         for (Node n : icfg) {
-            if (!(entries.contains(n) || exits.contains(n))) {
+            if (!entries.contains(n)) {
                 result.setInFact(n, analysis.newInitialFact());
                 result.setOutFact(n, analysis.newInitialFact());
-                workList.add(n);
             }
         }
     }
 
     private void doSolve() {
         // TODO - finish me
+        boolean changed = true;
+        List<Node> entries = getEntries();
         List<Node> exits = getExits();
 
-        while (!workList.isEmpty()) {
-            Node n = workList.peek();
-            workList.remove();
-
-            Fact inFact = result.getInFact(n);
-            Fact outFact = result.getOutFact(n);
-            for (ICFGEdge<Node> inEdge : icfg.getInEdgesOf(n)) {
-                Node pred = inEdge.getSource();
-                Fact predOutFact = result.getOutFact(pred);
-                Fact outFactAfterEdge = analysis.transferEdge(inEdge, predOutFact);
-                analysis.meetInto(outFactAfterEdge, inFact);
-            }
-
-            if (analysis.transferNode(n, inFact, outFact)) {
-                for (Node succ : icfg.getSuccsOf(n)) {
-                    if (!exits.contains(succ)) {
-                        workList.add(succ);
+        while (changed) {
+            changed = false;
+            for (Node node : icfg) {
+                if (! (entries.contains(node) || exits.contains(node))) {
+                    Fact inFact = result.getInFact(node);
+                    Fact outFact = result.getOutFact(node);
+                    for (ICFGEdge<Node> inEdge : icfg.getInEdgesOf(node)) {
+                        Node pred = inEdge.getSource();
+                        Fact predOutFact = result.getOutFact(pred);
+                        Fact outFactAfterEdge = analysis.transferEdge(inEdge, predOutFact);
+                        analysis.meetInto(outFactAfterEdge, inFact);
                     }
+
+                    if (analysis.transferNode(node, inFact, outFact)) {
+                        changed  = true;
+                    }
+
+                    result.setOutFact(node, outFact);
                 }
             }
-            result.setOutFact(n, outFact);
         }
     }
 
