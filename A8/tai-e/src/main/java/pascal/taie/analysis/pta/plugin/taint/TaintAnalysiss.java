@@ -124,14 +124,14 @@ public class TaintAnalysiss {
             /* analyze source */
             analyzeSource(stmt, recvObj, csResult);
             /* analyze taint transfer */
-            analyzeBaseToResult(stmt, csBase, csResult);
-            analyzeArgToBase(stmt, csBase);
-            analyzeArgToResult(stmt, csResult);
+            analyzeBaseToResult(stmt, csBase, recvObj, csResult);
+            analyzeArgToBase(stmt, csBase, recvObj);
+            analyzeArgToResult(stmt, recvObj, csResult);
             /* analyze sink */
             analyzeSink(stmt, recvObj, curCtx);
         } else {
             /* analyze taint transfer */
-            analyzeArgToBase(stmt, csBase);
+            analyzeArgToBase(stmt, csBase, recvObj);
             /* analyze sink */
             analyzeSink(stmt, recvObj, curCtx);
         }
@@ -146,7 +146,7 @@ public class TaintAnalysiss {
             /* analyze source */
             analyzeSource(stmt, null, csResult);
             /* analyze taint transfer */
-            analyzeArgToResult(stmt, csResult);
+            analyzeArgToResult(stmt, null, csResult);
             /* analyze sink */
             analyzeSink(stmt, null, curCtx);
         } else {
@@ -167,8 +167,8 @@ public class TaintAnalysiss {
         }
     }
 
-    private void analyzeBaseToResult(Invoke stmt, CSVar csBase, CSVar csResult) {
-        JMethod method = stmt.getMethodRef().resolve();
+    private void analyzeBaseToResult(Invoke invokeStmt, CSVar csBase, CSObj recv, CSVar csResult) {
+        JMethod method = solver.resolveCallee(recv, invokeStmt);
         Type returnType = method.getReturnType();
 
         TaintTransfer baseToResult = new TaintTransfer(method, TaintTransfer.BASE, TaintTransfer.RESULT, returnType);
@@ -177,8 +177,8 @@ public class TaintAnalysiss {
         }
     }
 
-    private void analyzeArgToBase(Invoke invokeStmt, CSVar csBase) {
-        JMethod method = invokeStmt.getMethodRef().resolve();
+    private void analyzeArgToBase(Invoke invokeStmt, CSVar csBase, CSObj recv) {
+        JMethod method = solver.resolveCallee(recv, invokeStmt);
         Type returnType = method.getReturnType();
         Context curCtx = csBase.getContext();
 
@@ -193,8 +193,8 @@ public class TaintAnalysiss {
         }
     }
 
-    private void analyzeArgToResult(Invoke invokeStmt, CSVar csResult) {
-        JMethod method = invokeStmt.getMethodRef().resolve();
+    private void analyzeArgToResult(Invoke invokeStmt, CSObj recv, CSVar csResult) {
+        JMethod method = solver.resolveCallee(recv, invokeStmt);
         Type returnType = method.getReturnType();
         Context curCtx = csResult.getContext();
 
