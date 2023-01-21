@@ -43,9 +43,7 @@ import pascal.taie.util.collection.Maps;
 import pascal.taie.util.collection.MultiMap;
 import pascal.taie.util.collection.Pair;
 
-import java.util.HashSet;
-import java.util.Set;
-import java.util.TreeSet;
+import java.util.*;
 
 public class TaintAnalysiss {
 
@@ -265,11 +263,16 @@ public class TaintAnalysiss {
     }
 
     private void changeTaintTypeAndPropagate(CSObj sourceCSTaint, Pointer target) {
-        Invoke source = manager.getSourceCall(sourceCSTaint.getObject());
-        Type targetType = target.getType();
-        Obj targetTaint = manager.makeTaint(source, targetType);
+        List<Type> targetTypes = new LinkedList<>();
+        for (CSObj targetCSObj : target.getPointsToSet().getObjects()) {
+            targetTypes.add(targetCSObj.getObject().getType());
+        }
+        for (Type targetType : targetTypes) {
+            Invoke source = manager.getSourceCall(sourceCSTaint.getObject());
+            Obj targetTaint = manager.makeTaint(source, targetType);
 
-        CSObj targetCSTaint = csManager.getCSObj(emptyContext, targetTaint);
-        solver.addWork(target, PointsToSetFactory.make(targetCSTaint));
+            CSObj targetCSTaint = csManager.getCSObj(emptyContext, targetTaint);
+            solver.addWork(target, PointsToSetFactory.make(targetCSTaint));
+        }
     }
 }
