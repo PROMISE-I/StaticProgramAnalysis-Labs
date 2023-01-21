@@ -63,7 +63,7 @@ public class TaintAnalysiss {
 
     private ArgsTaintPointerFlowGraph argsTaintPointerFlowGraph;
 
-    private Set<Pair<Invoke, Pair<CSVar, Integer>>> sinks;
+    private Set<Pair<Invoke, Pair<CSVar, Integer>>> sinkInfos;
 
     public TaintAnalysiss(Solver solver) {
         manager = new TaintManager();
@@ -71,7 +71,7 @@ public class TaintAnalysiss {
         csManager = solver.getCSManager();
         emptyContext = solver.getContextSelector().getEmptyContext();
         argsTaintPointerFlowGraph = new ArgsTaintPointerFlowGraph();
-        sinks = new HashSet<>();
+        sinkInfos = new HashSet<>();
         config = TaintConfig.readConfig(
                 solver.getOptions().getString("taint-config"),
                 World.get().getClassHierarchy(),
@@ -106,10 +106,8 @@ public class TaintAnalysiss {
 
     // TODO - finish me
     public void transferTaintOfArgs(Pointer pointer, PointsToSet diffPTS) {
-        PointsToSet taintPTS = PointsToSetFactory.make();
         for (CSObj csObj : diffPTS.getObjects()) {
             if (manager.isTaint(csObj.getObject())) {
-                taintPTS.addObject(csObj);
                 for (Pointer success : argsTaintPointerFlowGraph.getSuccsOf(pointer)) {
                     changeTaintTypeAndPropagate(csObj, success);
                 }
@@ -117,25 +115,25 @@ public class TaintAnalysiss {
         }
     }
 
-    public void analyzeTaintOnCall(Invoke stmt, CSVar csBase) {
+    public void analyzeTaintOnCall(Invoke stmt, CSVar csBase, CSObj recvObj) {
         Context curCtx = csBase.getContext();
         // result var
         Var result = stmt.getLValue();
         if (result != null) {
             CSVar csResult = csManager.getCSVar(curCtx, result);
             /* analyze source */
-            analyzeSource(stmt, csResult);
+            analyzeSource(stmt, recvObj, csResult);
             /* analyze taint transfer */
             analyzeBaseToResult(stmt, csBase, csResult);
             analyzeArgToBase(stmt, csBase);
             analyzeArgToResult(stmt, csResult);
             /* analyze sink */
-            analyzeSink(stmt, curCtx);
+            analyzeSink(stmt, recvObj, curCtx);
         } else {
             /* analyze taint transfer */
             analyzeArgToBase(stmt, csBase);
             /* analyze sink */
-            analyzeSink(stmt, curCtx);
+            analyzeSink(stmt, recvObj, curCtx);
         }
     }
 
@@ -146,19 +144,19 @@ public class TaintAnalysiss {
         if (result != null) {
             CSVar csResult = csManager.getCSVar(curCtx, result);
             /* analyze source */
-            analyzeSource(stmt, csResult);
+            analyzeSource(stmt, null, csResult);
             /* analyze taint transfer */
             analyzeArgToResult(stmt, csResult);
             /* analyze sink */
-            analyzeSink(stmt, curCtx);
+            analyzeSink(stmt, null, curCtx);
         } else {
             /* analyze sink */
-            analyzeSink(stmt, curCtx);
+            analyzeSink(stmt, null, curCtx);
         }
     }
 
-    private void analyzeSource(Invoke invokeStmt, CSVar csResult) {
-        JMethod method = invokeStmt.getMethodRef().resolve();
+    private void analyzeSource(Invoke invokeStmt, CSObj recv, CSVar csResult) {
+        JMethod method = solver.resolveCallee(recv, invokeStmt);
         Type returnType = method.getReturnType();
 
         Source source = new Source(method, returnType);
@@ -173,7 +171,7 @@ public class TaintAnalysiss {
         JMethod method = stmt.getMethodRef().resolve();
         Type returnType = method.getReturnType();
 
-        TaintTransfer baseToResult = new TaintTransfer(method, -1, -2, returnType);
+        TaintTransfer baseToResult = new TaintTransfer(method, TaintTransfer.BASE, TaintTransfer.RESULT, returnType);
         if (config.getTransfers().contains(baseToResult)) {
             addArgsTaintPFGEdge(csBase, csResult);
         }
@@ -188,7 +186,7 @@ public class TaintAnalysiss {
             Var arg = invokeStmt.getInvokeExp().getArg(argIdx);
             CSVar csArg = csManager.getCSVar(curCtx, arg);
 
-            TaintTransfer argToBase = new TaintTransfer(method, argIdx, -1, returnType);
+            TaintTransfer argToBase = new TaintTransfer(method, argIdx, TaintTransfer.BASE, returnType);
             if (config.getTransfers().contains(argToBase)) {
                 addArgsTaintPFGEdge(csArg, csBase);
             }
@@ -204,15 +202,15 @@ public class TaintAnalysiss {
             Var arg = invokeStmt.getInvokeExp().getArg(argIdx);
             CSVar csArg = csManager.getCSVar(curCtx, arg);
 
-            TaintTransfer argToResult = new TaintTransfer(method, argIdx, -2, returnType);
+            TaintTransfer argToResult = new TaintTransfer(method, argIdx, TaintTransfer.RESULT, returnType);
             if (config.getTransfers().contains(argToResult)) {
                 addArgsTaintPFGEdge(csArg, csResult);
             }
         }
     }
 
-    private void analyzeSink(Invoke invokeStmt, Context curCtx) {
-        JMethod method = invokeStmt.getMethodRef().resolve();
+    private void analyzeSink(Invoke invokeStmt, CSObj recv, Context curCtx) {
+        JMethod method = solver.resolveCallee(recv, invokeStmt);
 
         for (int argIdx = 0; argIdx < invokeStmt.getInvokeExp().getArgCount(); argIdx++) {
             Var arg = invokeStmt.getInvokeExp().getArg(argIdx);
@@ -220,7 +218,7 @@ public class TaintAnalysiss {
 
             Sink sink = new Sink(method, argIdx);
             if (config.getSinks().contains(sink)) {
-                sinks.add(new Pair<>(invokeStmt, new Pair<>(csArg, argIdx)));
+                sinkInfos.add(new Pair<>(invokeStmt, new Pair<>(csArg, argIdx)));
             }
         }
     }
@@ -235,7 +233,7 @@ public class TaintAnalysiss {
         PointerAnalysisResult result = solver.getResult();
         // TODO - finish me
         // You could query pointer analysis results you need via variable result.
-        for (Pair<Invoke, Pair<CSVar, Integer>> sinkInfo : sinks) {
+        for (Pair<Invoke, Pair<CSVar, Integer>> sinkInfo : sinkInfos) {
             Invoke sink = sinkInfo.first();
             CSVar csArg = sinkInfo.second().first();
             int argIdx = sinkInfo.second().second();

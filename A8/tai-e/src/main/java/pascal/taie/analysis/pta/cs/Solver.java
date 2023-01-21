@@ -341,7 +341,7 @@ public class Solver {
             }
 
             // TODO 分析污点
-            taintAnalysis.analyzeTaintOnCall(stmt, recv);
+            taintAnalysis.analyzeTaintOnCall(stmt, recv, recvObj);
         }
     }
 
@@ -397,7 +397,7 @@ public class Solver {
      * @param callSite the call site to be resolved.
      * @return the resolved callee.
      */
-    private JMethod resolveCallee(CSObj recv, Invoke callSite) {
+    public JMethod resolveCallee(CSObj recv, Invoke callSite) {
         Type type = recv != null ? recv.getObject().getType() : null;
         return CallGraphs.resolveCallee(type, callSite);
     }
