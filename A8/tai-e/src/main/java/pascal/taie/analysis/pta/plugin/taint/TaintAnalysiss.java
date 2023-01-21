@@ -157,11 +157,11 @@ public class TaintAnalysiss {
 
     private void analyzeSource(Invoke invokeStmt, CSObj recv, CSVar csResult) {
         JMethod method = solver.resolveCallee(recv, invokeStmt);
-        Type returnType = method.getReturnType();
+        Type taintType = method.getReturnType();
 
-        Source source = new Source(method, returnType);
+        Source source = new Source(method, taintType);
         if (config.getSources().contains(source)) { // TODO may fail due to different reference with the same value
-            Obj taintObj = manager.makeTaint(invokeStmt, returnType);
+            Obj taintObj = manager.makeTaint(invokeStmt, taintType);
             CSObj taintCSObj = csManager.getCSObj(emptyContext, taintObj);
             solver.addWork(csResult, PointsToSetFactory.make(taintCSObj));
         }
@@ -169,9 +169,9 @@ public class TaintAnalysiss {
 
     private void analyzeBaseToResult(Invoke invokeStmt, CSVar csBase, CSObj recv, CSVar csResult) {
         JMethod method = solver.resolveCallee(recv, invokeStmt);
-        Type returnType = method.getReturnType();
+        Type taintType = csResult.getType();
 
-        TaintTransfer baseToResult = new TaintTransfer(method, TaintTransfer.BASE, TaintTransfer.RESULT, returnType);
+        TaintTransfer baseToResult = new TaintTransfer(method, TaintTransfer.BASE, TaintTransfer.RESULT, taintType);
         if (config.getTransfers().contains(baseToResult)) {
             addArgsTaintPFGEdge(csBase, csResult);
         }
@@ -179,14 +179,14 @@ public class TaintAnalysiss {
 
     private void analyzeArgToBase(Invoke invokeStmt, CSVar csBase, CSObj recv) {
         JMethod method = solver.resolveCallee(recv, invokeStmt);
-        Type returnType = method.getReturnType();
+        Type taintType = recv.getObject().getType();
         Context curCtx = csBase.getContext();
 
         for (int argIdx = 0; argIdx < invokeStmt.getInvokeExp().getArgCount(); argIdx++) {
             Var arg = invokeStmt.getInvokeExp().getArg(argIdx);
             CSVar csArg = csManager.getCSVar(curCtx, arg);
 
-            TaintTransfer argToBase = new TaintTransfer(method, argIdx, TaintTransfer.BASE, returnType);
+            TaintTransfer argToBase = new TaintTransfer(method, argIdx, TaintTransfer.BASE, taintType);
             if (config.getTransfers().contains(argToBase)) {
                 addArgsTaintPFGEdge(csArg, csBase);
             }
@@ -195,14 +195,14 @@ public class TaintAnalysiss {
 
     private void analyzeArgToResult(Invoke invokeStmt, CSObj recv, CSVar csResult) {
         JMethod method = solver.resolveCallee(recv, invokeStmt);
-        Type returnType = method.getReturnType();
+        Type taintType = csResult.getType();
         Context curCtx = csResult.getContext();
 
         for (int argIdx = 0; argIdx < invokeStmt.getInvokeExp().getArgCount(); argIdx++) {
             Var arg = invokeStmt.getInvokeExp().getArg(argIdx);
             CSVar csArg = csManager.getCSVar(curCtx, arg);
 
-            TaintTransfer argToResult = new TaintTransfer(method, argIdx, TaintTransfer.RESULT, returnType);
+            TaintTransfer argToResult = new TaintTransfer(method, argIdx, TaintTransfer.RESULT, taintType);
             if (config.getTransfers().contains(argToResult)) {
                 addArgsTaintPFGEdge(csArg, csResult);
             }
